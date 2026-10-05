@@ -722,6 +722,16 @@ function checkPathJoint(s, p) {
 	return type;
 }
 
+// True if pairing start-to-start and end-to-end gives longer connection lines
+// than pairing each start with the other edge's end, i.e. the lines cross.
+function connectionsCrossed(edgeA, edgeB) {
+	var a = shape[edgeA.shape].children[edgeA.path];
+	var b = shape[edgeB.shape].children[edgeB.path];
+	var straight = a.firstSegment.point.getDistance(b.firstSegment.point) + a.lastSegment.point.getDistance(b.lastSegment.point);
+	var swapped = a.firstSegment.point.getDistance(b.lastSegment.point) + a.lastSegment.point.getDistance(b.firstSegment.point);
+	return swapped < straight;
+}
+
 function shapePathClick() {
 	if (pathSelected.shape > -1 && pathSelected.path > -1) {
 		if (checkPathJoint(pathSelected.shape, pathSelected.path)=='noJoint' && mode=='set') {
@@ -735,6 +745,10 @@ function shapePathClick() {
 				var jA = jointMake[0], jB = jointMake[1];
 				if (lengthsMatch(jA.shape, jA.path, jB.shape, jB.path)) {
 					var jointDetail = {'0':jointMake[0], '1':jointMake[1], 'profile':'none', 'm':0, 'f':1, 'dirM':1, 'dirF':-1, 'revA': 1, 'revB': 1};
+					if (connectionsCrossed(jA, jB)) {
+						shape[jB.shape].children[jB.path].reverse();
+						jointDetail.revB = -1;
+					}
 					joints.push(jointDetail);
 					initJoint(jointDetail[0].shape, jointDetail[0].path);
 					initJoint(jointDetail[1].shape, jointDetail[1].path);
