@@ -212,7 +212,7 @@ function initForms() {
 		var thisId = this.id;
 		var thisIdStr = thisId.split('_');
 		var index = parseInt(thisIdStr[1]);
-		if (index<jointType.length-1) {
+		if (index<9) { // preview images exist only for the original joint types
 			if (index < 9) {
 				$('#jointImageDiv').html('<img src="images/jointType-0'+(index+1)+'.svg">');
 			} else {
@@ -412,7 +412,7 @@ function createJointProfileMenu(i, ic, id) {
 	html = html+'</div>';
 	for (j in jointProfileList[i].param) {
 		if (paramInteger.indexOf(j) >= 0) {
-			html = html+'<li class="param"><label>'+j+'</label><span></span><input type="number" step="1" name="'+j+'"></li>';
+			html = html+'<li class="param"><label>'+j+'</label><span>'+(j=='auto angle' ? '1=on' : '')+'</span><input type="number" step="1" min="0" name="'+j+'"></li>';
 		} else if (paramAngle.indexOf(j) >= 0) {
 			html = html+'<li class="param"><label>'+j+'</label><span>deg</span><input type="number" step="0.1" name="'+j+'"></li>';
 		} else if (docUnits=='mm') {
@@ -591,7 +591,13 @@ function refreshJointList() {
 		var index = i;
 		var jID = index+'_'+joints[i]['0'].shape+'-'+joints[i]['0'].path+'_'+joints[i]['1'].shape+'-'+joints[i]['1'].path;
 		var html = '<div id="joint_'+jID+'" class="jointItem">';
-		html = html+'<div class="title">joint '+jID+'<b>delete</b></div>';
+		var profileParam = null;
+		for (k in jointProfileList) {
+			if (jointProfileList[k].profile==joints[i].profile && isAutoAngleType(jointProfileList[k].name)) {
+				profileParam = jointProfileList[k].param;
+			}
+		}
+		html = html+'<div class="title">joint '+jID+'<span class="autoAngle">'+autoAngleLabel(i, profileParam)+'</span><b>delete</b></div>';
 		html = html+'<div class="jointOptions">';
 		html = html+'<select>';
 		for (i in jointProfileList) {
@@ -663,9 +669,10 @@ function refreshJointList() {
 				generateJointLines();
 				displayJointLines();
 				generateEdgeNormals();
-				displayFlipLines();	
+				displayFlipLines();
 			}
-			generateJoint(id);			
+			generateJoint(id);
+			regenerateAutoAngleJoints();
 		});
 		$(this).find('.revF').on('click', function() {
 			if (joints[id].f==0) {
@@ -681,7 +688,8 @@ function refreshJointList() {
 				generateEdgeNormals();
 				displayFlipLines();
 			}
-			generateJoint(id);			
+			generateJoint(id);
+			regenerateAutoAngleJoints();
 		});
 		$(this).find('.title').on('click', function() {
 			if (!pasteJointProfile.bool) {
@@ -700,6 +708,7 @@ function refreshJointList() {
 			removeJoint(shapeA, pathA);
 			removeJoint(shapeB, pathB);
 			joints.splice(id, 1);
+			regenerateAutoAngleJoints();
 			$(this).parent().parent().remove();
 			highlight.removeChildren();
 			if (mode=='set') {

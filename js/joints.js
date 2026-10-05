@@ -1,7 +1,8 @@
 var jointProfileCount = 0;
 
 var paramInteger = [
-	'hook count'
+	'hook count',
+	'auto angle'
 ];
 
 var paramAngle = [
@@ -87,6 +88,7 @@ var fingerJointA = {
 		'finger width': 8,
 		'finger radius': 0,
 		'interior angle': 90,
+		'auto angle': 1,
 		'tolerance': 0
 	}
 };
@@ -158,9 +160,48 @@ var noneJoint = {
 	}
 };
 
-var jointType = [loopInsert, loopInsertH, loopInsertSurface, hemJoint, interlockingJoint, fingerJoint, fingerJointA, tabInsertJoint, flapJoint, noneJoint];
+// Finger joint for pieces drawn as the model's outer shell: fingers and slots are
+// cut inward from the drawn edge, so the assembled model keeps the SVG's outer size.
+var fingerJointShell = {
+	'name':'finger joint (shell)',
+	'profile':'',
+	'notes': 'notes',
+	'param': {
+		'material thickness': 3,
+		'finger width': 8,
+		'interior angle': 90,
+		'auto angle': 1,
+		'tolerance': 0
+	}
+};
+
+var jointType = [loopInsert, loopInsertH, loopInsertSurface, hemJoint, interlockingJoint, fingerJoint, fingerJointA, tabInsertJoint, flapJoint, fingerJointShell, noneJoint];
 
 var jointProfileList = [];
+
+// Edges may differ in length by up to this fraction and still be joined. Exported
+// pieces often disagree by a few tenths of a millimetre; above 1% the user is warned.
+var lengthMatchLimit = 0.05;
+
+function lengthRatio(shapeA, pathA, shapeB, pathB) {
+	return shape[shapeA].children[pathA].length / shape[shapeB].children[pathB].length;
+}
+
+function lengthsMatch(shapeA, pathA, shapeB, pathB) {
+	var ratio = lengthRatio(shapeA, pathA, shapeB, pathB);
+	return ratio <= 1+lengthMatchLimit && ratio >= 1/(1+lengthMatchLimit);
+}
+
+function lengthsClose(shapeA, pathA, shapeB, pathB) {
+	var ratio = lengthRatio(shapeA, pathA, shapeB, pathB);
+	return ratio <= 1.01 && ratio >= 1/1.01;
+}
+
+function lengthMismatchMessage(shapeA, pathA, shapeB, pathB) {
+	var lenA = shape[shapeA].children[pathA].length;
+	var lenB = shape[shapeB].children[pathB].length;
+	return '<b>Cannot join</b>: paths are '+lenA.toFixed(2)+'mm and '+lenB.toFixed(2)+'mm (more than '+Math.round(lengthMatchLimit*100)+'% different)';
+}
 
 function createJointProfile(n) {
 	if (n < jointType.length) {
@@ -224,10 +265,8 @@ function generateJoint(index) {
 		}
 	}
 
-	var delta = shape[shapeA].children[pathA].length / shape[shapeB].children[pathB].length;
-	
-	if (delta > 1.01 || delta < 0.99) {
-		setMessage('<b>Cannot join</b>: paths have significantly different lengths', '#F80');
+	if (!lengthsMatch(shapeA, pathA, shapeB, pathB)) {
+		setMessage(lengthMismatchMessage(shapeA, pathA, shapeB, pathB), '#F80');
 	} else {
 		switch (jType) {
 			case 'loop insert (overlap)':
@@ -293,7 +332,23 @@ function generateJoint(index) {
 				break;
 
 			case 'finger joint (angle)':
-				var childPath = generateFingerJointA(index, shapeA, pathA, shapeB, pathB, param);
+			case 'finger joint (shell)':
+				var jID = index+'_'+joints[index]['0'].shape+'-'+joints[index]['0'].path+'_'+joints[index]['1'].shape+'-'+joints[index]['1'].path;
+				$('#joint_'+jID+' .autoAngle').html(autoAngleLabel(index, param));
+				if (param['auto angle']==1) {
+					var autoAngle = calJointAngle(index);
+					if (autoAngle.angle != null) {
+						param['interior angle'] = autoAngle.angle;
+					}
+					if (autoAngle.mismatch) {
+						setMessage(autoAngle.message, '#F80');
+					}
+				}
+				if (jType=='finger joint (shell)') {
+					var childPath = generateFingerJointShell(index, shapeA, pathA, shapeB, pathB, param);
+				} else {
+					var childPath = generateFingerJointA(index, shapeA, pathA, shapeB, pathB, param);
+				}
 				if (childPath) {
 					shape[shapeA].children[pathA+'_joint'].addChildren(childPath.returnA);
 					shape[shapeA].children[pathA+'_joint'].strokeColor = '#000';
@@ -606,6 +661,309 @@ function generateFingerJointA(index, shapeA, pathA, shapeB, pathB, param) {
 			return {'returnA':returnA, 'returnB':returnB};
 		}
 	}
+}
+
+// The drawn edges are the outer faces of the two panels. Fingers alternate between
+// the pieces; on each piece the edge is cut back into the piece by ownDepth where it
+// owns the finger and by otherDepth where the other piece does. Depths are chosen
+// so neither panel crosses the other's outer face or overlaps its material.
+function generateFingerJointShell(index, shapeA, pathA, shapeB, pathB, param) {
+	var t = param['material thickness'];
+	var theta = param['interior angle']/180*Math.PI;
+	if (param['interior angle'] < 30 || param['interior angle'] > 175) {
+		setMessage('<b>"interior angle" not between 30 and 175 degrees</b> Shell finger joint not generated.', '#F80');
+		return false;
+	}
+	var ownDepth, otherDepth;
+	if (theta <= Math.PI/2) {
+		ownDepth = t/Math.tan(theta);
+		otherDepth = t*(1+Math.cos(theta))/Math.sin(theta);
+	} else {
+		ownDepth = 0;
+		otherDepth = Math.min(t*Math.sin(theta), -t*Math.tan(theta));
+	}
+
+	var pathAStart = shape[shapeA].children[pathA].firstSegment.point;
+	var pathAEnd = shape[shapeA].children[pathA].lastSegment.point;
+	var pathBStart = shape[shapeB].children[pathB].firstSegment.point;
+	var pathBEnd = shape[shapeB].children[pathB].lastSegment.point;
+	var lengthA = pathAStart.getDistance(pathAEnd);
+	var lengthB = pathBStart.getDistance(pathBEnd);
+	var fingerCount = Math.max(2, Math.floor(Math.min(lengthA, lengthB)/(param['finger width']*2))*2);
+	var tol = param['tolerance'];
+
+	// Each edge is divided by its own length, so traced edges that differ slightly
+	// still have matching finger counts and both ends line up.
+	function edgePath(start, end, inward, owner) {
+		var length = start.getDistance(end);
+		var gap = length/fingerCount;
+		var dir = end.subtract(start).normalize();
+		var pts = [start];
+		for (var i=0; i<fingerCount; i++) {
+			var own = (i%2==owner);
+			var s0 = own ? gap*i+tol/2 : gap*i-tol/2;
+			var s1 = own ? gap*(i+1)-tol/2 : gap*(i+1)+tol/2;
+			s0 = Math.max(0, s0);
+			s1 = Math.min(length, s1);
+			var d = own ? ownDepth : otherDepth;
+			pts.push(start.add(dir.multiply(s0)).add(inward.multiply(d)));
+			pts.push(start.add(dir.multiply(s1)).add(inward.multiply(d)));
+		}
+		pts.push(end);
+		var clean = [pts[0]];
+		for (var i=1; i<pts.length; i++) {
+			if (pts[i].getDistance(clean[clean.length-1]) > 1e-6) {
+				clean.push(pts[i]);
+			}
+		}
+		return new Path(clean);
+	}
+
+	var dirA = pathAEnd.subtract(pathAStart).normalize();
+	var dirB = pathBEnd.subtract(pathBStart).normalize();
+	var inwardA = new Point(dirA.y, -dirA.x).multiply(joints[index]['dirM']);
+	var inwardB = new Point(dirB.y, -dirB.x).multiply(joints[index]['dirF']);
+	return {'returnA':[edgePath(pathAStart, pathAEnd, inwardA, 0)], 'returnB':[edgePath(pathBStart, pathBEnd, inwardB, 1)]};
+}
+
+// Sets every joint to a shell finger joint profile, with each piece's cuts facing
+// into that piece, then regenerates all joints.
+function autoJoin() {
+	if (joints.length==0) {
+		setMessage('<b>Auto Join</b>: no joints set. Attach the sides first.', '#F80');
+		return;
+	}
+	var profileIndex = -1;
+	for (var i=0; i<jointProfileList.length; i++) {
+		if (jointProfileList[i].name=='finger joint (shell)') {
+			profileIndex = i;
+			break;
+		}
+	}
+	if (profileIndex==-1) {
+		createJointProfile(jointType.indexOf(fingerJointShell));
+		createJointProfileMenu(jointProfileList.length-1, jointProfileCount-1, 'joint_'+(jointProfileCount-1));
+		profileIndex = jointProfileList.length-1;
+	}
+	var profile = jointProfileList[profileIndex].profile;
+
+	for (var i=0; i<joints.length; i++) {
+		joints[i].profile = profile;
+		var edgeM = joints[i][joints[i].m];
+		var edgeF = joints[i][joints[i].f];
+		joints[i].dirM = inwardSign(edgeM.shape, edgeM.path);
+		joints[i].dirF = inwardSign(edgeF.shape, edgeF.path);
+	}
+	for (var i=0; i<joints.length; i++) {
+		generateJoint(i);
+	}
+	refreshJointList();
+	if (mode=='set' || mode=='flip' || mode=='reverse' || mode=='swap') {
+		generateEdgeNormals();
+		displayFlipLines();
+	}
+
+	var fallback = 0;
+	for (var i=0; i<joints.length; i++) {
+		if (calJointAngle(i).angle==null) {
+			fallback++;
+		}
+	}
+	var mismatched = 0;
+	for (var i=0; i<joints.length; i++) {
+		if (!lengthsClose(joints[i]['0'].shape, joints[i]['0'].path, joints[i]['1'].shape, joints[i]['1'].path)) {
+			mismatched++;
+		}
+	}
+	var unjoined = countUnjoinedEdges();
+	var msg = '<b>Auto Join</b>: '+joints.length+' joints set to "'+profile+'".';
+	if (fallback>0) {
+		msg = msg+' '+fallback+' used the profile angle (no closed 3-piece corner).';
+	}
+	if (mismatched>0) {
+		msg = msg+' '+mismatched+' have edges more than 1% different in length (marked &Delta; in the joint list).';
+	}
+	if (unjoined>0) {
+		msg = msg+' '+unjoined+' edges are not joined.';
+	}
+	setMessage(msg, fallback>0 || unjoined>0 || mismatched>0 ? '#F80' : '#444');
+}
+
+// +1 if the edge's normal (dir.y, -dir.x) points into its piece, -1 otherwise.
+// Uses an even-odd ray cast against the piece's edges.
+function inwardSign(s, p) {
+	var path = shape[s].children[p];
+	var mid = path.getPointAt(path.length/2);
+	var tan = path.getTangentAt(path.length/2).normalize();
+	var normal = new Point(tan.y, -tan.x);
+	var q = mid.add(normal.multiply(0.01));
+	var ray = new Path.Line(q, q.add(normal.rotate(7).multiply(100000)));
+	var crossings = 0;
+	for (var i=0; i<shape[s].children.length; i++) {
+		var child = shape[s].children[i];
+		if (child.className=='Path' && child.segments.length>1) {
+			crossings += ray.getIntersections(child).length;
+		}
+	}
+	ray.remove();
+	return crossings%2==1 ? 1 : -1;
+}
+
+function countUnjoinedEdges() {
+	var count = 0;
+	for (var s=0; s<shape.length; s++) {
+		for (var p=0; p<shape[s].children.length; p++) {
+			var child = shape[s].children[p];
+			if (child.className=='Path' && child.segments.length>1 && jointPartner(s, p)==null) {
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
+function isAutoAngleType(name) {
+	return name=='finger joint (angle)' || name=='finger joint (shell)';
+}
+
+// Calculates a joint's interior (dihedral) angle from the flat pieces, assuming the
+// model is closed and convex with three pieces meeting at each corner. The three
+// corner angles at a vertex (a, b adjacent to the joint, c opposite) give:
+//   cos(angle) = (cos c - cos a cos b) / (sin a sin b)
+function calJointAngle(index) {
+	var angles = [];
+	var ends = ['first', 'last'];
+	for (var i=0; i<ends.length; i++) {
+		var corner = cornerAnglesAtEnd(index, ends[i]);
+		if (corner.length==3) {
+			var a = corner[0];
+			var b = corner[2];
+			var c = corner[1];
+			var cosTheta = (Math.cos(c)-Math.cos(a)*Math.cos(b))/(Math.sin(a)*Math.sin(b));
+			cosTheta = Math.max(-1, Math.min(1, cosTheta));
+			angles.push(Math.acos(cosTheta)/Math.PI*180);
+		}
+	}
+	if (angles.length==0) {
+		return {'angle':null, 'mismatch':false};
+	} else if (angles.length==2 && Math.abs(angles[0]-angles[1])>0.5) {
+		var avg = (angles[0]+angles[1])/2;
+		return {'angle':avg, 'mismatch':true, 'message':'<b>Auto angle mismatch</b>: ends give '+angles[0].toFixed(1)+'&deg; and '+angles[1].toFixed(1)+'&deg;. Using '+avg.toFixed(1)+'&deg;. Check joint directions.'};
+	} else {
+		var avg = angles.length==2 ? (angles[0]+angles[1])/2 : angles[0];
+		return {'angle':avg, 'mismatch':false};
+	}
+}
+
+// Joint list label: the calculated angle, or the profile angle it fell back to
+// The angle is recalculated rather than stored on the joint, since code elsewhere
+// loops over every property of a joint and expects only edges and settings.
+function autoAngleLabel(index, param) {
+	var label = lengthMismatchLabel(index);
+	if (!param || param['auto angle']!=1) {
+		return label;
+	}
+	var autoAngle = calJointAngle(index).angle;
+	if (autoAngle!=null) {
+		return ' &middot; '+autoAngle.toFixed(1)+'&deg;'+label;
+	}
+	return ' &middot; '+param['interior angle']+'&deg; (profile)'+label;
+}
+
+// Joint list label for edges more than 1% different in length, e.g. " · Δ0.36mm"
+function lengthMismatchLabel(index) {
+	var a = joints[index]['0'];
+	var b = joints[index]['1'];
+	if (lengthsClose(a.shape, a.path, b.shape, b.path)) {
+		return '';
+	}
+	var diff = Math.abs(shape[a.shape].children[a.path].length - shape[b.shape].children[b.path].length);
+	return ' &middot; <span style="color:#F80">&Delta;'+diff.toFixed(2)+'mm</span>';
+}
+
+// Walks around the model vertex at one end of a joint, collecting the corner angle
+// of each piece in order, starting with the corner on the joint's first edge.
+// Returns an empty list if the vertex is open or not reached back.
+function cornerAnglesAtEnd(index, end) {
+	var start = {'shape':joints[index]['0'].shape, 'path':joints[index]['0'].path, 'end':end};
+	var cur = start;
+	var corners = [];
+	for (var step=0; step<8; step++) {
+		var pt = edgeEndPoint(cur.shape, cur.path, cur.end);
+		var next = cornerNeighbour(cur.shape, cur.path, pt);
+		if (next==null) {
+			return [];
+		}
+		var d1 = edgeEndDir(cur.shape, cur.path, cur.end);
+		var d2 = edgeEndDir(cur.shape, next.path, next.end);
+		corners.push(Math.abs(angleVec(d1, d2)));
+		var partner = jointPartner(cur.shape, next.path);
+		if (partner==null) {
+			return [];
+		}
+		// joined edges correspond start-to-start and end-to-end
+		cur = {'shape':partner.shape, 'path':partner.path, 'end':next.end};
+		if (cur.shape==start.shape && cur.path==start.path) {
+			return cur.end==start.end ? corners : [];
+		}
+	}
+	return [];
+}
+
+// A joint's auto angle depends on its neighbouring joints, so recalculate after
+// joints are added, removed or reversed.
+function regenerateAutoAngleJoints() {
+	for (var i=0; i<joints.length; i++) {
+		for (var j=0; j<jointProfileList.length; j++) {
+			if (joints[i].profile==jointProfileList[j].profile) {
+				if (isAutoAngleType(jointProfileList[j].name) && jointProfileList[j].param['auto angle']==1) {
+					generateJoint(i);
+				}
+				break;
+			}
+		}
+	}
+}
+
+function edgeEndPoint(s, p, end) {
+	var path = shape[s].children[p];
+	return end=='first' ? path.firstSegment.point : path.lastSegment.point;
+}
+
+function edgeEndDir(s, p, end) { // Direction leaving the edge's endpoint, along the edge
+	var path = shape[s].children[p];
+	if (end=='first') {
+		return path.getTangentAt(0).normalize();
+	} else {
+		return path.getTangentAt(path.length).normalize().multiply(-1);
+	}
+}
+
+function cornerNeighbour(s, p, pt) { // Other edge of the same piece that touches pt
+	for (var i=0; i<shape[s].children.length; i++) {
+		var child = shape[s].children[i];
+		if (i!=p && child.className=='Path' && child.segments.length>1) {
+			if (pt.getDistance(child.firstSegment.point)<0.1) {
+				return {'path':i, 'end':'first'};
+			}
+			if (pt.getDistance(child.lastSegment.point)<0.1) {
+				return {'path':i, 'end':'last'};
+			}
+		}
+	}
+	return null;
+}
+
+function jointPartner(s, p) { // Edge joined to edge p of shape s
+	for (var i=0; i<joints.length; i++) {
+		if (joints[i]['0'].shape==s && joints[i]['0'].path==p) {
+			return joints[i]['1'];
+		}
+		if (joints[i]['1'].shape==s && joints[i]['1'].path==p) {
+			return joints[i]['0'];
+		}
+	}
+	return null;
 }
 
 function generateFlapJoint(index, shapeA, pathA, shapeB, pathB, param) {

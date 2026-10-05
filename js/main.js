@@ -451,9 +451,7 @@ function processProject(e) {
 
 		refreshJointList();
 
-		for (i in joints) {
-			generateJoint[i];
-		}
+		regenerateAutoAngleJoints();
 		jointLines.removeChildren();
 		refreshShapeDisplay();
     }
@@ -734,23 +732,28 @@ function shapePathClick() {
 				tempLines.strokeWidth = 3;
 			}
 			if (jointMake.length==2) {
-				var delta = shape[jointMake[0].shape].children[jointMake[0].path].length / shape[jointMake[1].shape].children[jointMake[1].path].length;
-				if (delta < 1.01 && delta > 0.99) {
+				var jA = jointMake[0], jB = jointMake[1];
+				if (lengthsMatch(jA.shape, jA.path, jB.shape, jB.path)) {
 					var jointDetail = {'0':jointMake[0], '1':jointMake[1], 'profile':'none', 'm':0, 'f':1, 'dirM':1, 'dirF':-1, 'revA': 1, 'revB': 1};
 					joints.push(jointDetail);
 					initJoint(jointDetail[0].shape, jointDetail[0].path);
 					initJoint(jointDetail[1].shape, jointDetail[1].path);
 					generateJoint(joints.length-1);
+					regenerateAutoAngleJoints();
 					generateJointLines();
 					displayJointLines();
 					generateEdgeNormals();
 					displayFlipLines();
 					jointMake = [];
 					tempLines.removeChildren();
-					setMessage('<b>Joint created</b>', '#444');
+					if (lengthsClose(jA.shape, jA.path, jB.shape, jB.path)) {
+						setMessage('<b>Joint created</b>', '#444');
+					} else {
+						setMessage('<b>Joint created</b>: paths are '+shape[jA.shape].children[jA.path].length.toFixed(2)+'mm and '+shape[jB.shape].children[jB.path].length.toFixed(2)+'mm. Fingers are fitted to each edge.', '#F80');
+					}
 					refreshJointList();
 				} else {
-					setMessage('<b>Cannot join</b>: paths have significantly different lengths', '#F80');
+					setMessage(lengthMismatchMessage(jA.shape, jA.path, jB.shape, jB.path), '#F80');
 					jointMake = [];
 					tempLines.removeChildren();
 				}	
@@ -776,8 +779,9 @@ function shapePathClick() {
 				generateJointLines();
 				displayJointLines();
 				generateEdgeNormals();
-				displayFlipLines();	
+				displayFlipLines();
 				generateJoint(index);
+				regenerateAutoAngleJoints();
 				setMessage('<b>Path reversed</b>', '#444');
 			} else if (mode=='flip') {
 				if (joints[index].m==edgeIndex) {
